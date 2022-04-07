@@ -1,152 +1,153 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading.Tasks;
 using FluentResults;
 using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
-using Telegram.Bot.Types;
-using TelegramBot.Models;
+using StackExchange.Redis;
+using VvsuParser.Models;
 
-namespace TelegramBot.Repository
+namespace TelegramBot.Repository;
+
+/// <summary>
+/// Репозиторий для работы с Redis
+/// </summary>
+public class RedisPersistenceRepository
 {
+    private readonly RedisClient _redisClient;
+    private readonly ILogger<RedisPersistenceRepository> _logger;
+        
     /// <summary>
-    /// Репозиторий для работы с Redis
+    /// Конструктор
     /// </summary>
-    public class RedisPersistenceRepository
+    /// <param name="redisClient">Клиент Redis</param>
+    /// <param name="logger">Логгер</param>
+    public RedisPersistenceRepository(RedisClient redisClient, ILogger<RedisPersistenceRepository> logger)
     {
-        private readonly RedisClient _redisClient;
-        private readonly ILogger<RedisPersistenceRepository> _logger;
-        private readonly string _usersKey = "telegram:bot:users";
-        
-        /// <summary>
-        /// Конструктор
-        /// </summary>
-        /// <param name="redisClient">Клиент Redis</param>
-        /// <param name="logger">Логгер</param>
-        public RedisPersistenceRepository(RedisClient redisClient, ILogger<RedisPersistenceRepository> logger)
-        {
-            _redisClient = redisClient;
-            _logger = logger;
-        }
-        
-        /// <summary>
-        /// Получение списка участников чата
-        /// </summary>
-        /// <returns>Список участников чата</returns>
-        public async Task<Result<List<TgChatMember>>> GetAllChatMembersAsync()
-        {
-            try
-            {
-                var redis = _redisClient.GetDatabase();
-                var chatsJson = await redis.HashGetAllAsync(_usersKey);
-                var chats = new List<TgChatMember>(chatsJson.Length);
-                
-                foreach (var chatJson in chatsJson)
-                    chats.Add(JsonConvert.DeserializeObject<TgChatMember>(chatJson.Value));
+        _redisClient = redisClient;
+        _logger = logger;
+    }
 
-                return Result.Ok(chats);
-            }
-            catch (Exception e)
-            {
-                _logger.LogError($"При получении списка участников чата произошла ошибка: {e}");
-                return Result.Fail<List<TgChatMember>>($"При получении списка участников чата произошла ошибка");
-            }
-        }
+    public async Task<Result> SaveAllVvsuGroupsAsync(List<string> allGroups)
+    {
+        try
+        {
+            var redis = _redisClient.GetDatabase();
 
-        /// <summary>
-        /// Сохранения участника чата
-        /// </summary>
-        /// <param name="chatId">Идентификатор чата</param>
-        /// <param name="userId">Идентификатор пользователя</param>
-        /// <param name="chetMemberName">Имя пользователя</param>
-        public async Task<Result> SaveChatMemberAsync(long chatId, long userId, string chetMemberName)
-        {
-            try
-            {
-                var redis = _redisClient.GetDatabase();
-                var chatMember = new TgChatMember()
-                {
-                    Name = chetMemberName,
-                    ChatId = chatId,
-                    UserId = userId
-                };
-                var jsonUser = JsonConvert.SerializeObject(chatMember); 
-                
-                var containUser = await redis.SetContainsAsync(GetKey(chatId, chetMemberName), jsonUser);
-                
-                if(!containUser)
-                    await redis.HashSetAsync(_usersKey, GetKey(chatId, chetMemberName), jsonUser);
-                
-                return Result.Ok();
-            }
-            catch (Exception e)
-            {
-                _logger.LogError($"При сохранении информации о участнике чата произошла ошибка: {e}");
-                return Result.Fail<List<Chat>>($"При сохранении информации о участнике чата произошла ошибка");
-            }
+            var data = allGroups.Select(s => new RedisValue(s)).ToArray();
+            var containUser = await redis.ListRightPushAsync("telegram:bot:allVvsuGroups", data);
+            
+            return Result.Ok();
         }
-        
-        /// <summary>
-        /// Удаление участника чата
-        /// </summary>
-        /// <param name="chatId">Идентификатор чата</param>
-        /// <param name="userName">Имя пользователя</param>
-        public async Task<Result> DeleteChatMemberAsync(long chatId, string userName)
+        catch (Exception e)
         {
-            try
-            {
-                var redis = _redisClient.GetDatabase();
-                await redis.HashDeleteAsync(_usersKey, GetKey(chatId, userName));
-                
-                return Result.Ok();
-            }
-            catch (Exception e)
-            {
-                _logger.LogError($"При удалении информации о участнике чата произошла ошибка: {e}");
-                return Result.Fail<List<Chat>>($"При удалении информации о участнике чата произошла ошибка");
-            }
+            _logger.LogError($"При сохранении списка групп произошла ошибка: {e}");
+            return Result.Fail($"При сохранении списка групп произошла ошибка");
         }
-        
-        /// <summary>
-        /// Получение участника чата 
-        /// </summary>
-        /// <param name="chatId">Идентификатор чата</param>
-        /// <param name="userName">Имя пользователя</param>
-        /// <returns></returns>
-        public async Task<Result<TgChatMember>> GetChatMemberAsync(long chatId, string userName)
+    }
+    
+    public async Task<Result<List<string>>> GetAllVvsuGroupsAsync()
+    {
+        try
         {
-            try
-            {
-                var redis = _redisClient.GetDatabase();
-                var redisData = redis.HashGet(_usersKey, GetKey(chatId, userName));
+            var redis = _redisClient.GetDatabase();
+            var redisData = await redis.ListRangeAsync("telegram:bot:allVvsuGroups");
                 
-                if (!redisData.HasValue)
-                    return Result.Fail($"Не удалось найти запись: {GetKey(chatId, userName)}");
-                
-                var chatMember = JsonConvert.DeserializeObject<TgChatMember>(redisData);
+            if (redisData.Length == 0)
+                return Result.Fail<List<string>>($"Не удалось найти группы");
 
-                return Result.Ok(chatMember);
-            }
-            catch (Exception e)
-            {
-                _logger.LogError($"При получении информации о участнике чата произошла ошибка: {e}");
-                return Result.Fail($"При получении информации о участнике чата произошла ошибка");
-            }
+            var allGroups = redisData
+                .Select(el => el.ToString())
+                .ToList();
+
+            return Result.Ok(allGroups);
         }
-        
-        
-        /// <summary>
-        /// Получение ключа для записи Redis
-        /// </summary>
-        /// <param name="chatId">Идентификатор чата</param>
-        /// <param name="chetMemberName">Имя участника чата</param>
-        /// <example>
-        /// 11111_nikita
-        /// </example>
-        /// <returns>Ключ</returns>
-        private string GetKey(long chatId, string chetMemberName)
+        catch (Exception ex)
         {
-            return $"{chatId}_{chetMemberName}";
+            _logger.LogError($"Не удалось найти группы: {ex}");
+            return Result.Fail($"Не удалось найти группы");
+        }
+    }
+    
+    public async Task<Result> SaveCurrentGroupAsync(long chatId, string groupName)
+    {
+        try
+        {
+            var redis = _redisClient.GetDatabase();
+            var successSave = await redis.HashSetAsync("telegram:bot:chatCurrentGroup", chatId, groupName);
+                
+            if (!successSave)
+                return Result.Fail($"Не удалось сохранить текущую группу для чата: {chatId}");
+
+            return Result.Ok();
+        }
+        catch (Exception e)
+        {
+            _logger.LogError($"При сохранении текущей группы для чата произошла ошибка: {e}");
+            return Result.Fail($"При сохранении текущей группы для чата произошла ошибка");
+        }
+    }
+    
+    public async Task<Result<string>> GetCurrentGroupAsync(long chatId)
+    {
+        try
+        {
+            var redis = _redisClient.GetDatabase();
+            var redisData = redis.HashGet("telegram:bot:chatCurrentGroup", chatId);
+                
+            if (!redisData.HasValue)
+                return Result.Fail<string>($"Не удалось найти запись текущей группы для чата: {chatId}");
+
+            var chatMember = (string)redisData;
+
+            return Result.Ok(chatMember);
+        }
+        catch (Exception e)
+        {
+            _logger.LogError($"При получении текущей группы чата произошла ошибка: {e}");
+            return Result.Fail($"При получении текущей группы чата произошла ошибка");
+        }
+    }
+    
+    public async Task<Result<List<VvsuStudyScheduleWeek>>> GetGroupScheduleAsync(string group)
+    {
+        try
+        {
+            var redis = _redisClient.GetDatabase();
+            var redisValue = await redis.HashGetAsync("telegram:bot:groupSchedule", group);
+            if (!redisValue.HasValue)
+                return Result.Fail($"Не удалось получить расписание группы: {group}");
+
+            var json = (string)redisValue;
+            var scheduleWeeks = JsonConvert.DeserializeObject<List<VvsuStudyScheduleWeek>>(json);
+            
+            return Result.Ok(scheduleWeeks);
+        }
+        catch (Exception e)
+        {
+            _logger.LogError($"При получении расписания групы произошла ошибка: {e}");
+            return Result.Fail($"При получении расписания групы произошла ошибка");
+        }
+    }
+    
+    public async Task<Result> SaveGroupScheduleAsync(string group, List<VvsuStudyScheduleWeek> scheduleWeeks)
+    {
+        try
+        {
+            var redis = _redisClient.GetDatabase();
+            var scheduleWeeksJson = JsonConvert.SerializeObject(scheduleWeeks);
+            
+            var successSet = await redis.HashSetAsync("telegram:bot:groupSchedule", group, scheduleWeeksJson);
+            if (!successSet)
+                return Result.Fail($"Не удалось сохранить расписание группы: {group}");
+            
+            return Result.Ok();
+        }
+        catch (Exception e)
+        {
+            _logger.LogError($"При сохранении расписания групы произошла ошибка: {e}");
+            return Result.Fail($"При сохранении расписания групы произошла ошибка");
         }
     }
 }

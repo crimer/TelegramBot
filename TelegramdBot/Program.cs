@@ -1,29 +1,37 @@
-﻿using System;
-using System.Threading.Tasks;
+﻿using System.Threading.Tasks;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Telegram.Bot;
+using Telegram.Bot.Extensions.Polling;
+using Telegram.Bot.Types.Enums;
 using TelegramBot.Di;
+using TelegramBot.Telegram;
 
-namespace TelegramBot
+public class Program
 {
-    /// <summary>
-    /// Главный файл
-    /// </summary>
-    class Program
+    public static async Task Main(string[] args)
     {
-        /// <summary>
-        /// Главный метод
-        /// </summary>
-        static void Main(string[] args)
-        {
-            var services = new ServiceCollection();
-            services.ConfigureServices();
-            
-            var serviceProvider = services.BuildServiceProvider();
+        var host = Host.CreateDefaultBuilder(args)
+            .ConfigureServices(serviceCollection =>
+            {
+                serviceCollection.ConfigureServices();
+            })
+            .Build();
 
-            // Точка входа
-            Task.Run(async () => await serviceProvider.GetRequiredService<App>().Run(args));
+        var telegramBotClient = host.Services.GetService<ITelegramBotClient>();
+        var handler = host.Services.GetRequiredService<TelegramUpdateHandler>();
             
-            Console.ReadKey();
-        }
+        telegramBotClient.StartReceiving(handler, new ReceiverOptions
+        {
+            AllowedUpdates = new []
+            {
+                UpdateType.Message,
+                UpdateType.CallbackQuery,
+                UpdateType.ChatMember,
+                UpdateType.MyChatMember
+            }
+        });
+            
+        await host.RunAsync();
     }
 }
